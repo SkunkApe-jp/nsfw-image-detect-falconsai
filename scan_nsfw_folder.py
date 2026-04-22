@@ -24,22 +24,21 @@ def _is_relative_to(path: Path, other: Path) -> bool:
     try:
         path.resolve().relative_to(other.resolve())
         return True
-    except Exception:
+    except (ValueError, OSError):
         return False
 
 
 def _iter_images(root: Path, recursive: bool, out_dir: Optional[Path]) -> Iterable[Path]:
-    patterns = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp", "*.tif", "*.tiff", "*.gif")
-    roots = [root]
-    for r in roots:
-        for pattern in patterns:
-            iterator = r.rglob(pattern) if recursive else r.glob(pattern)
-            for p in iterator:
-                if not p.is_file():
-                    continue
-                if out_dir is not None and _is_relative_to(p, out_dir):
-                    continue
-                yield p
+    allowed_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
+    iterator = root.rglob("*") if recursive else root.iterdir()
+    for p in iterator:
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in allowed_suffixes:
+            continue
+        if out_dir is not None and _is_relative_to(p, out_dir):
+            continue
+        yield p
 
 
 def _load_classifier(model_id: str, device: int):
@@ -96,11 +95,10 @@ def _safe_dest_path(dest_dir: Path, src: Path) -> Path:
 
 
 def _copy_or_move(src: Path, dest: Path, action: str) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
     if action == "copy":
         shutil.copy2(src, dest)
     elif action == "move":
-        shutil.move(str(src), str(dest))
+        shutil.move(src, dest)
     else:
         raise ValueError(f"Unknown action: {action}")
 
@@ -150,6 +148,8 @@ def main(argv: list[str]) -> int:
     )
 
     args = parser.parse_args(argv)
+    if not (0.0 <= args.threshold <= 1.0):
+        parser.error("--threshold must be between 0.0 and 1.0")
 
     root = args.folder.expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -185,7 +185,11 @@ def main(argv: list[str]) -> int:
             dest = _safe_dest_path(bucket_dir, image_path)
 
             if args.dry_run:
-                print(f"[{idx}/{len(images)}] {rel} -> {dest.relative_to(root)} ({result.label})")
+                try:
+                    dest_display = dest.relative_to(root)
+                except ValueError:
+                    dest_display = dest
+                print(f"[{idx}/{len(images)}] {rel} -> {dest_display} ({result.label})")
             else:
                 _copy_or_move(image_path, dest, action=args.action)
 
@@ -231,4 +235,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
