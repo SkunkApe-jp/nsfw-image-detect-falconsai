@@ -1,6 +1,6 @@
 # NSFW Folder Scanner (Falconsai)
 
-This repo contains a simple script that scans a folder of images using the Hugging Face model `Falconsai/nsfw_image_detection`, then groups images into `sfw/` and `nsfw/` subfolders.
+Scans a folder of images using the Hugging Face model `Falconsai/nsfw_image_detection` and generates an interactive D3 tree view gallery showing NSFW/SFW classification results. Optionally organize files into folders.
 
 ## Setup
 
@@ -14,27 +14,20 @@ pip install -r requirements.txt
 
 ## Run
 
-Scan a folder and **copy** images into grouped subfolders (recursive by default):
+**Default** (scan + generate gallery, recursive by default):
 
 ```powershell
 python .\scan_nsfw_folder.py "C:\path\to\images"
 ```
 
-This creates:
+This creates `C:\path\to\images\_nsfw_scan\gallery.html` with an interactive tree view.
 
-- `C:\path\to\images\_nsfw_scan\sfw\`
-- `C:\path\to\images\_nsfw_scan\nsfw\`
+### Optional Flags
 
-To **move** (instead of copy):
-
-```powershell
-python .\scan_nsfw_folder.py "C:\path\to\images" --recursive --action move
-```
-
-Optional:
-
-- `--threshold 0.7` (be stricter about NSFW)
-- `--dry-run` (no file writes)
-- `--device 0` (use first CUDA GPU, if available)
-- `--write-csv` (writes `_nsfw_scan\report.csv`)
+- `--organize` — Copy/move images into `sfw/` and `nsfw/` folders (default: gallery only)
+- `--action move` — Move instead of copy when organizing
+- `--threshold 0.7` — Be stricter about NSFW (default: 0.5)
+- `--device 0` — Use first CUDA GPU
+- `--write-csv` — Also write `_nsfw_scan\report.csv`
+- `--no-gallery` — Skip generating the HTML gallery
 
