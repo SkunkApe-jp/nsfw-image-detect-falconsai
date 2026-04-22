@@ -364,6 +364,37 @@ def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float
       border-top: 1px solid var(--border);
       flex-wrap: wrap;
     }}
+
+    /* Hover Preview */
+    .hover-preview {{
+      position: fixed;
+      pointer-events: none;
+      z-index: 10000;
+      background: rgba(15, 21, 34, 0.98);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+      display: none;
+      max-width: 400px;
+      max-height: 400px;
+    }}
+    .hover-preview img {{
+      max-width: 380px;
+      max-height: 380px;
+      object-fit: contain;
+      border-radius: 8px;
+      display: block;
+    }}
+    .hover-preview .hp-path {{
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+      max-width: 380px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
   </style>
 </head>
 <body>
@@ -427,6 +458,12 @@ def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float
       Tip: click a card to preview. Keyboard: <strong>Esc</strong> close, <strong>←/→</strong> previous/next.
       If images don't load, your browser may block local file access; try a different browser or serve the folder via a local web server.
     </div>
+  </div>
+
+  <!-- Hover Preview -->
+  <div class="hover-preview" id="hoverPreview">
+    <img id="hoverImg" src="" alt="">
+    <div class="hp-path" id="hoverPath"></div>
   </div>
 
   <div class="modal" id="modal" aria-hidden="true">
@@ -544,6 +581,29 @@ def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float
 
       merged.attr("title", d => d.rel_path || "");
       merged.on("click", (event, d) => openModal(items, d));
+
+      // Hover preview
+      merged.on("mouseenter", (event, d) => {{
+        const hp = $("hoverPreview");
+        const img = $("hoverImg");
+        const path = $("hoverPath");
+        img.src = d.image_href || "";
+        path.textContent = d.rel_path || "";
+        hp.style.display = "block";
+      }});
+      merged.on("mouseleave", () => {{
+        $("hoverPreview").style.display = "none";
+        $("hoverImg").src = "";
+      }});
+      merged.on("mousemove", (event) => {{
+        const hp = $("hoverPreview");
+        const x = event.clientX + 15;
+        const y = event.clientY + 15;
+        const maxX = window.innerWidth - 420;
+        const maxY = window.innerHeight - 420;
+        hp.style.left = Math.min(x, maxX) + "px";
+        hp.style.top = Math.min(y, maxY) + "px";
+      }});
 
       merged.select(".thumb").each(function(d) {{
         const el = d3.select(this);
