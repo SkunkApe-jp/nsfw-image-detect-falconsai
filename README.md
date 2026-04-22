@@ -14,10 +14,10 @@ pip install -r requirements.txt
 
 ## Run
 
-Scan a folder and **copy** images into grouped subfolders:
+Scan a folder and **copy** images into grouped subfolders (recursive by default):
 
 ```powershell
-python .\scan_nsfw_folder.py "C:\path\to\images" --recursive
+python .\scan_nsfw_folder.py "C:\path\to\images"
 ```
 
 This creates:

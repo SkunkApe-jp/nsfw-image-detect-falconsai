@@ -115,7 +115,7 @@ def main(argv: list[str]) -> int:
         default=0.5,
         help="Classify as NSFW when nsfw score >= threshold (default: 0.5)",
     )
-    parser.add_argument("--recursive", action="store_true", help="Scan subfolders recursively")
+    parser.add_argument("--recursive", action="store_true", default=True, help="Scan subfolders recursively")
     parser.add_argument(
         "--out",
         type=Path,
