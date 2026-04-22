@@ -106,618 +106,364 @@ def _copy_or_move(src: Path, dest: Path, action: str) -> None:
 
 
 def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float) -> None:
-    """Generate an interactive D3-powered thumbnail gallery (no inner scrollbars)."""
-    html_content = f"""<!doctype html>
-<html lang="en">
+    """Generate a collapsible D3 tree view with root at top, NSFW/SFW branches."""
+    # Build hierarchical data: root -> [NSFW, SFW] -> images
+    nsfw_items = [r for r in results if r.get("label") == "nsfw"]
+    sfw_items = [r for r in results if r.get("label") != "nsfw"]
+    
+    tree_data = {
+        "name": f"Scan Results ({len(results)})",
+        "type": "root",
+        "children": [
+            {
+                "name": f"NSFW ({len(nsfw_items)})",
+                "type": "nsfw",
+                "children": [
+                    {"name": r["rel_path"], "type": "image", "score": r.get("nsfw_score", 0), "href": r.get("image_href", "")}
+                    for r in sorted(nsfw_items, key=lambda x: x.get("nsfw_score", 0), reverse=True)
+                ]
+            },
+            {
+                "name": f"SFW ({len(sfw_items)})",
+                "type": "sfw", 
+                "children": [
+                    {"name": r["rel_path"], "type": "image", "score": r.get("nsfw_score", 0), "href": r.get("image_href", "")}
+                    for r in sorted(sfw_items, key=lambda x: x.get("nsfw_score", 0), reverse=True)
+                ]
+            }
+        ]
+    }
+    
+    html_content = f"""<!DOCTYPE html>
+<html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NSFW Scan Gallery</title>
+  <title>NSFW Scan Tree</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
-    :root {{
-      --bg: #0b0f14;
-      --panel: #121826;
-      --card: #0f1522;
-      --border: rgba(255,255,255,0.10);
-      --text: rgba(255,255,255,0.92);
-      --muted: rgba(255,255,255,0.65);
-      --nsfw: #ff6b6b;
-      --sfw: #51cf66;
-      --accent: #339af0;
-    }}
-    * {{ box-sizing: border-box; }}
-    html, body {{ height: 100%; }}
     body {{
       margin: 0;
-      background: var(--bg);
-      color: var(--text);
+      background: #0b0f14;
+      color: rgba(255,255,255,0.92);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      overflow-x: hidden;
-    }}
-    a {{ color: var(--accent); }}
-    .wrap {{ max-width: 1280px; margin: 0 auto; padding: 16px; }}
-    .top {{
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
-      padding: 12px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      border-radius: 12px;
-    }}
-    .title {{
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-    }}
-    h1 {{ margin: 0; font-size: 16px; font-weight: 650; letter-spacing: 0.2px; }}
-    .meta {{ color: var(--muted); font-size: 12px; }}
-    .controls {{
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 10px;
-    }}
-    @media (min-width: 900px) {{
-      .controls {{ grid-template-columns: 2fr 2fr 1fr 1fr; align-items: end; }}
-    }}
-    label {{ display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }}
-    input[type="text"], select {{
-      width: 100%;
-      padding: 10px 10px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.05);
-      color: var(--text);
-      outline: none;
-    }}
-    input[type="range"] {{ width: 100%; }}
-    .toggles {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      padding: 8px 10px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.03);
-    }}
-    .toggles .t {{
-      display: inline-flex;
-      gap: 8px;
-      align-items: center;
-      font-size: 13px;
-      color: var(--text);
-      user-select: none;
-    }}
-    .grid {{
-      margin-top: 14px;
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-      gap: 12px;
-    }}
-    .card {{
-      appearance: none;
-      width: 100%;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 0;
-      background: var(--card);
-      color: var(--text);
-      text-align: left;
-      overflow: hidden;
-      cursor: pointer;
-    }}
-    .thumb {{
-      position: relative;
-      width: 100%;
-      height: 140px;
-      background: rgba(255,255,255,0.03);
-    }}
-    .thumb img {{
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }}
-    .badge {{
-      position: absolute;
-      left: 10px;
-      top: 10px;
-      font-size: 12px;
-      padding: 4px 8px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(0,0,0,0.55);
-      backdrop-filter: blur(6px);
-    }}
-    .badge.nsfw {{ border-color: rgba(255,107,107,0.4); color: var(--nsfw); }}
-    .badge.sfw {{ border-color: rgba(81,207,102,0.4); color: var(--sfw); }}
-    .info {{ padding: 10px 10px 12px; }}
-    .name {{
-      font-size: 12px;
-      color: var(--text);
-      line-height: 1.25;
-      overflow: hidden;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      word-break: break-word;
-      min-height: 30px;
-    }}
-    .score {{
-      margin-top: 6px;
-      font-size: 12px;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-    }}
-    .pager {{
-      margin-top: 14px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      color: var(--muted);
-      font-size: 12px;
-    }}
-    .btn {{
-      appearance: none;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.04);
-      color: var(--text);
-      padding: 8px 10px;
-      border-radius: 10px;
-      cursor: pointer;
-    }}
-    .btn:disabled {{ opacity: 0.5; cursor: not-allowed; }}
-    .note {{
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 12px;
-    }}
-
-    /* Modal */
-    .modal {{
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.80);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      z-index: 9999;
-    }}
-    .modal.open {{ display: flex; }}
-    .modal-card {{
-      width: min(1200px, 96vw);
-      max-height: 92vh;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(15, 21, 34, 0.95);
-      overflow: hidden;
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-    }}
-    .modal-head {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 12px;
-      border-bottom: 1px solid var(--border);
-    }}
-    .modal-title {{
-      font-size: 13px;
-      color: var(--text);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 80vw;
-    }}
-    .modal-body {{
-      padding: 12px;
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
       overflow: hidden;
     }}
-    @media (min-width: 900px) {{
-      .modal-body {{ grid-template-columns: 2fr 1fr; }}
-    }}
-    .modal-img {{
-      width: 100%;
-      height: min(70vh, 680px);
-      background: rgba(0,0,0,0.35);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }}
-    .modal-img img {{
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      display: block;
-    }}
-    .modal-meta {{
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 10px;
-      background: rgba(255,255,255,0.03);
+    #tree {{
+      width: 100vw;
+      height: 100vh;
       overflow: auto;
+      cursor: grab;
     }}
-    .kv {{ font-size: 12px; color: var(--muted); margin: 6px 0; word-break: break-all; }}
-    .kv strong {{ color: var(--text); font-weight: 600; }}
-    .modal-foot {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      padding: 12px;
-      border-top: 1px solid var(--border);
-      flex-wrap: wrap;
+    #tree:active {{ cursor: grabbing; }}
+    .node circle {{
+      fill: #fff;
+      stroke-width: 2px;
+      cursor: pointer;
+      transition: all 0.2s;
     }}
-
-    /* Hover Preview */
-    .hover-preview {{
-      position: fixed;
-      pointer-events: none;
-      z-index: 10000;
+    .node:hover circle {{
+      stroke-width: 3px;
+      r: 8;
+    }}
+    .node.root circle {{ stroke: #339af0; fill: #339af0; r: 10; }}
+    .node.nsfw circle {{ stroke: #ff6b6b; fill: #ff6b6b; r: 8; }}
+    .node.sfw circle {{ stroke: #51cf66; fill: #51cf66; r: 8; }}
+    .node.image circle {{ stroke: #888; fill: #fff; r: 4; }}
+    .node.collapsed circle {{ fill: #666 !important; }}
+    .node text {{
+      font-size: 12px;
+      fill: rgba(255,255,255,0.85);
+      cursor: pointer;
+    }}
+    .node.root text {{ font-size: 14px; font-weight: 600; fill: #fff; }}
+    .node.nsfw text {{ font-size: 13px; font-weight: 500; fill: #ff6b6b; }}
+    .node.sfw text {{ font-size: 13px; font-weight: 500; fill: #51cf66; }}
+    .node.image text {{ font-size: 11px; fill: rgba(255,255,255,0.65); }}
+    .link {{
+      fill: none;
+      stroke: rgba(255,255,255,0.2);
+      stroke-width: 1.5px;
+    }}
+    .tooltip {{
+      position: absolute;
+      padding: 10px;
       background: rgba(15, 21, 34, 0.98);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 8px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
-      display: none;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      pointer-events: none;
+      font-size: 12px;
       max-width: 400px;
-      max-height: 400px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+      display: none;
+      z-index: 1000;
     }}
-    .hover-preview img {{
+    .tooltip img {{
       max-width: 380px;
-      max-height: 380px;
-      object-fit: contain;
-      border-radius: 8px;
+      max-height: 300px;
+      border-radius: 6px;
       display: block;
+      margin-bottom: 8px;
     }}
-    .hover-preview .hp-path {{
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 6px;
-      max-width: 380px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .tooltip .path {{
+      color: rgba(255,255,255,0.7);
+      word-break: break-all;
+    }}
+    .tooltip .score {{
+      color: #ff6b6b;
+      font-weight: 500;
+      margin-top: 4px;
+    }}
+    .controls {{
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(15, 21, 34, 0.95);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 12px;
+      z-index: 100;
+    }}
+    .controls button {{
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-right: 6px;
+      font-size: 12px;
+    }}
+    .controls button:hover {{ background: rgba(255,255,255,0.15); }}
+    .stats {{
+      color: rgba(255,255,255,0.6);
+      margin-bottom: 8px;
     }}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="top">
-      <div class="title">
-        <h1>NSFW Scan Gallery</h1>
-        <div class="meta">Threshold: {threshold} • Total: {len(results)} images</div>
-      </div>
-
-      <div class="controls">
-        <div>
-          <label for="q">Search (filename / path)</label>
-          <input id="q" type="text" placeholder="e.g. beach, IMG_1234, folder/name" autocomplete="off">
-        </div>
-
-        <div>
-          <label for="sort">Sort</label>
-          <select id="sort">
-            <option value="score_desc">NSFW score (high → low)</option>
-            <option value="score_asc">NSFW score (low → high)</option>
-            <option value="name_asc">Name (A → Z)</option>
-            <option value="name_desc">Name (Z → A)</option>
-          </select>
-        </div>
-
-        <div>
-          <label for="minScore">Min NSFW score</label>
-          <input id="minScore" type="range" min="0" max="1" step="0.01" value="0">
-          <div class="meta"><span id="minScoreVal">0.00</span></div>
-        </div>
-
-        <div>
-          <label for="pageSize">Page size</label>
-          <select id="pageSize">
-            <option value="60">60</option>
-            <option value="120" selected>120</option>
-            <option value="240">240</option>
-            <option value="480">480</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="toggles">
-        <label class="t"><input id="showSfw" type="checkbox" checked> Show SFW</label>
-        <label class="t"><input id="showNsfw" type="checkbox" checked> Show NSFW</label>
-        <label class="t"><input id="blurNsfw" type="checkbox" checked> Blur NSFW thumbnails</label>
-        <span class="meta" id="counts"></span>
-      </div>
-    </div>
-
-    <div class="grid" id="grid"></div>
-    <div class="pager">
-      <div><span id="pageInfo"></span></div>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="prev">Prev</button>
-        <button class="btn" id="next">Next</button>
-      </div>
-    </div>
-    <div class="note">
-      Tip: click a card to preview. Keyboard: <strong>Esc</strong> close, <strong>←/→</strong> previous/next.
-      If images don't load, your browser may block local file access; try a different browser or serve the folder via a local web server.
-    </div>
+  <div class="controls">
+    <button onclick="expandAll()">Expand All</button>
+    <button onclick="collapseAll()">Collapse All</button>
+    <button onclick="toggleNsfw()">Toggle NSFW</button>
+    <button onclick="toggleSfw()">Toggle SFW</button>
   </div>
-
-  <!-- Hover Preview -->
-  <div class="hover-preview" id="hoverPreview">
-    <img id="hoverImg" src="" alt="">
-    <div class="hp-path" id="hoverPath"></div>
-  </div>
-
-  <div class="modal" id="modal" aria-hidden="true">
-    <div class="modal-card" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <div class="modal-title" id="modalTitle"></div>
-        <button class="btn" id="close">Close</button>
-      </div>
-      <div class="modal-body">
-        <div class="modal-img"><img id="modalImg" alt=""></div>
-        <div class="modal-meta" id="modalMeta"></div>
-      </div>
-      <div class="modal-foot">
-        <div class="meta" id="modalIdx"></div>
-        <div style="display:flex; gap:8px; align-items:center;">
-          <button class="btn" id="mPrev">Prev</button>
-          <button class="btn" id="mNext">Next</button>
-        </div>
-      </div>
-    </div>
-  </div>
+  <div id="tree"></div>
+  <div class="tooltip" id="tooltip"></div>
 
   <script>
-    const DATA = {json.dumps(results, ensure_ascii=False)};
-    const state = {{
-      q: "",
-      sort: "score_desc",
-      minScore: 0.0,
-      showSfw: true,
-      showNsfw: true,
-      blurNsfw: true,
-      page: 1,
-      pageSize: 120,
-      activeIndex: -1,
-    }};
-
-    const $ = (id) => document.getElementById(id);
-    const grid = d3.select("#grid");
-
-    function asNumber(v) {{
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
+    const data = {json.dumps(tree_data, indent=2)};
+    const margin = {{top: 60, right: 120, bottom: 20, left: 120}};
+    const nodeWidth = 300;
+    const nodeHeight = 30;
+    
+    // Setup SVG with zoom
+    const svg = d3.select("#tree").append("svg")
+      .attr("width", "100%")
+      .attr("height", "100%")
+      .style("min-height", "100vh");
+    
+    const g = svg.append("g")
+      .attr("transform", `translate(${{margin.left}},${{margin.top}})`);
+    
+    // Zoom behavior
+    const zoom = d3.zoom()
+      .scaleExtent([0.3, 3])
+      .on("zoom", (event) => g.attr("transform", event.transform));
+    svg.call(zoom);
+    
+    let i = 0;
+    let root;
+    
+    const tooltip = d3.select("#tooltip");
+    
+    // Initialize
+    root = d3.hierarchy(data);
+    root.x0 = 0;
+    root.y0 = 0;
+    
+    // Collapse function
+    function collapse(d) {{
+      if (d.children) {{
+        d._children = d.children;
+        d._children.forEach(collapse);
+        d.children = null;
+      }}
     }}
-
-    function normalize(s) {{
-      return (s || "").toString().toLowerCase();
+    
+    // Expand function  
+    function expand(d) {{
+      if (d._children) {{
+        d.children = d._children;
+        d.children.forEach(expand);
+        d._children = null;
+      }}
     }}
-
-    function getFilteredSorted() {{
-      const q = normalize(state.q).trim();
-      const minScore = state.minScore;
-      let items = DATA.filter(d => {{
-        const label = (d.label || "").toLowerCase();
-        if (!state.showSfw && label !== "nsfw") return false;
-        if (!state.showNsfw && label === "nsfw") return false;
-
-        const score = asNumber(d.nsfw_score);
-        if (score < minScore) return false;
-
-        if (!q) return true;
-        const hay = normalize(d.rel_path || d.name || "");
-        return hay.includes(q);
-      }});
-
-      const cmpName = (a, b) => normalize(a.rel_path).localeCompare(normalize(b.rel_path));
-      const cmpScore = (a, b) => asNumber(a.nsfw_score) - asNumber(b.nsfw_score);
-
-      if (state.sort === "name_asc") items.sort(cmpName);
-      else if (state.sort === "name_desc") items.sort((a,b) => -cmpName(a,b));
-      else if (state.sort === "score_asc") items.sort(cmpScore);
-      else items.sort((a,b) => -cmpScore(a,b));
-
-      return items;
+    
+    // Toggle on click
+    function toggle(d) {{
+      if (d.children) {{
+        d._children = d.children;
+        d.children = null;
+      }} else {{
+        d.children = d._children;
+        d._children = null;
+      }}
+      update(d);
     }}
-
-    function paginate(items) {{
-      const total = items.length;
-      const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
-      state.page = Math.min(Math.max(1, state.page), totalPages);
-      const start = (state.page - 1) * state.pageSize;
-      const end = Math.min(total, start + state.pageSize);
-      return {{ total, totalPages, start, end, pageItems: items.slice(start, end) }};
+    
+    function expandAll() {{
+      expand(root);
+      update(root);
     }}
-
-    function labelBadge(label) {{
-      return (label || "").toLowerCase() === "nsfw" ? "nsfw" : "sfw";
+    
+    function collapseAll() {{
+      root.children.forEach(collapse);
+      update(root);
     }}
-
-    function fmtScore(v) {{
-      if (v === null || v === undefined || v === "") return "—";
-      const n = Number(v);
-      return Number.isFinite(n) ? n.toFixed(4) : "—";
-    }}
-
-    function render() {{
-      const items = getFilteredSorted();
-      const {{ total, totalPages, start, end, pageItems }} = paginate(items);
-
-      const totalNsfw = items.filter(d => (d.label || "").toLowerCase() === "nsfw").length;
-      const totalSfw = items.length - totalNsfw;
-      $("counts").textContent = `Showing ${{items.length}} • SFW ${{totalSfw}} • NSFW ${{totalNsfw}}`;
-
-      $("pageInfo").textContent = `Page ${{state.page}} / ${{totalPages}} • Items ${{total ? (start+1) : 0}}-${{end}} of ${{total}}`;
-      $("prev").disabled = state.page <= 1;
-      $("next").disabled = state.page >= totalPages;
-
-      const cards = grid.selectAll("button.card").data(pageItems, d => d.rel_path);
-      cards.exit().remove();
-
-      const enter = cards.enter().append("button").attr("class", "card");
-      enter.append("div").attr("class", "thumb");
-      enter.append("div").attr("class", "info");
-
-      const merged = enter.merge(cards);
-
-      merged.attr("title", d => d.rel_path || "");
-      merged.on("click", (event, d) => openModal(items, d));
-
-      // Hover preview
-      merged.on("mouseenter", (event, d) => {{
-        const hp = $("hoverPreview");
-        const img = $("hoverImg");
-        const path = $("hoverPath");
-        img.src = d.image_href || "";
-        path.textContent = d.rel_path || "";
-        hp.style.display = "block";
-      }});
-      merged.on("mouseleave", () => {{
-        $("hoverPreview").style.display = "none";
-        $("hoverImg").src = "";
-      }});
-      merged.on("mousemove", (event) => {{
-        const hp = $("hoverPreview");
-        const x = event.clientX + 15;
-        const y = event.clientY + 15;
-        const maxX = window.innerWidth - 420;
-        const maxY = window.innerHeight - 420;
-        hp.style.left = Math.min(x, maxX) + "px";
-        hp.style.top = Math.min(y, maxY) + "px";
-      }});
-
-      merged.select(".thumb").each(function(d) {{
-        const el = d3.select(this);
-        const badge = labelBadge(d.label);
-        let img = el.select("img");
-        if (img.empty()) {{
-          img = el.append("img")
-            .attr("loading", "lazy")
-            .attr("alt", "");
+    
+    function toggleNsfw() {{
+      const nsfwNode = root.children.find(c => c.data.type === "nsfw");
+      if (nsfwNode) {{
+        if (nsfwNode.children) {{
+          collapse(nsfwNode);
+        }} else {{
+          expand(nsfwNode);
         }}
-        img.attr("src", d.image_href || "");
-        img.style("filter", (state.blurNsfw && badge === "nsfw") ? "blur(18px)" : "none");
-        img.on("error", () => img.style("opacity", "0.25"));
-
-        let b = el.select(".badge");
-        if (b.empty()) b = el.append("div").attr("class", "badge");
-        b.attr("class", `badge ${{badge}}`).text(badge.toUpperCase());
-      }});
-
-      merged.select(".info").each(function(d) {{
-        const el = d3.select(this);
-        let name = el.select(".name");
-        if (name.empty()) name = el.append("div").attr("class", "name");
-        name.text(d.rel_path || "");
-
-        let score = el.select(".score");
-        if (score.empty()) {{
-          score = el.append("div").attr("class", "score");
-          score.append("div").attr("class", "s");
-          score.append("div").attr("class", "n");
+        update(root);
+      }}
+    }}
+    
+    function toggleSfw() {{
+      const sfwNode = root.children.find(c => c.data.type === "sfw");
+      if (sfwNode) {{
+        if (sfwNode.children) {{
+          collapse(sfwNode);
+        }} else {{
+          expand(sfwNode);
         }}
-        score.select(".s").text(`NSFW: ${{fmtScore(d.nsfw_score)}}`);
-        score.select(".n").text(`SFW: ${{fmtScore(d.normal_score)}}`);
-      }});
+        update(root);
+      }}
     }}
-
-    function openModal(allItems, item) {{
-      const idx = allItems.findIndex(d => d.rel_path === item.rel_path);
-      state.activeIndex = idx;
-      updateModal(allItems);
-      const modal = $("modal");
-      modal.classList.add("open");
-      modal.setAttribute("aria-hidden", "false");
+    
+    // Tree layout - top down
+    const tree = d3.tree().nodeSize([nodeHeight, nodeWidth]);
+    
+    function update(source) {{
+      const nodes = root.descendants();
+      const links = root.links();
+      
+      // Compute new tree layout
+      tree(root);
+      
+      // Normalize for fixed depth
+      nodes.forEach(d => {{ d.y = d.depth * 250; }});
+      
+      // Update nodes
+      const node = g.selectAll("g.node")
+        .data(nodes, d => d.id || (d.id = ++i));
+      
+      // Enter new nodes
+      const nodeEnter = node.enter().append("g")
+        .attr("class", d => `node ${{d.data.type}} ${{d._children ? "collapsed" : ""}}`)
+        .attr("transform", d => `translate(${{source.y0}},${{source.x0}})`)
+        .on("click", (event, d) => toggle(d));
+      
+      nodeEnter.append("circle")
+        .attr("r", 1e-6)
+        .style("fill", d => d._children ? "#666" : null);
+      
+      nodeEnter.append("text")
+        .attr("dy", ".35em")
+        .attr("x", d => d.children || d._children ? -12 : 12)
+        .style("text-anchor", d => d.children || d._children ? "end" : "start")
+        .text(d => d.data.name.length > 50 ? d.data.name.slice(0, 47) + "..." : d.data.name)
+        .on("mouseover", (event, d) => {{
+          if (d.data.type === "image" && d.data.href) {{
+            tooltip.style("display", "block")
+              .html(`<img src="${{d.data.href}}" onerror="this.style.display='none'" /><div class="path">${{d.data.name}}</div>${{d.data.score !== undefined ? `<div class="score">NSFW: ${{d.data.score.toFixed(4)}}</div>` : ""}}`)
+              .style("left", (event.pageX + 15) + "px")
+              .style("top", (event.pageY + 15) + "px");
+          }} else {{
+            tooltip.style("display", "block")
+              .html(`<div class="path">${{d.data.name}}</div>`)
+              .style("left", (event.pageX + 15) + "px")
+              .style("top", (event.pageY + 15) + "px");
+          }}
+        }})
+        .on("mouseout", () => {{
+          tooltip.style("display", "none").html("");
+        }});
+      
+      // Transition nodes
+      const nodeUpdate = node.merge(nodeEnter).transition().duration(500)
+        .attr("transform", d => `translate(${{d.y}},${{d.x}})`);
+      
+      nodeUpdate.select("circle")
+        .attr("r", d => d.data.type === "root" ? 10 : (d.data.type === "image" ? 4 : 8))
+        .style("fill", d => d._children ? "#666" : null);
+      
+      nodeUpdate.attr("class", d => `node ${{d.data.type}} ${{d._children ? "collapsed" : ""}}`);
+      
+      // Exit nodes
+      const nodeExit = node.exit().transition().duration(500)
+        .attr("transform", d => `translate(${{source.y}},${{source.x}})`)
+        .remove();
+      
+      nodeExit.select("circle").attr("r", 1e-6);
+      nodeExit.select("text").style("fill-opacity", 1e-6);
+      
+      // Update links
+      const link = g.selectAll("path.link")
+        .data(links, d => d.target.id);
+      
+      const linkEnter = link.enter().insert("path", "g")
+        .attr("class", "link")
+        .attr("d", d => {{
+          const o = {{x: source.x0, y: source.y0}};
+          return diagonal(o, o);
+        }});
+      
+      const linkUpdate = link.merge(linkEnter).transition().duration(500)
+        .attr("d", d => diagonal(d.source, d.target));
+      
+      link.exit().transition().duration(500)
+        .attr("d", d => {{
+          const o = {{x: source.x, y: source.y}};
+          return diagonal(o, o);
+        }})
+        .remove();
+      
+      // Store positions
+      nodes.forEach(d => {{ d.x0 = d.x; d.y0 = d.y; }});
+      
+      // Auto-resize SVG height
+      const maxX = d3.max(nodes, d => d.x) || 0;
+      const minX = d3.min(nodes, d => d.x) || 0;
+      const height = Math.max(window.innerHeight, maxX - minX + margin.top + margin.bottom);
+      svg.attr("height", height);
     }}
-
-    function closeModal() {{
-      const modal = $("modal");
-      modal.classList.remove("open");
-      modal.setAttribute("aria-hidden", "true");
-      state.activeIndex = -1;
+    
+    function diagonal(s, d) {{
+      return `M ${{s.y}} ${{s.x}}
+              C ${{(s.y + d.y) / 2}} ${{s.x}},
+                ${{(s.y + d.y) / 2}} ${{d.x}},
+                ${{d.y}} ${{d.x}}`;
     }}
-
-    function updateModal(allItems) {{
-      const idx = state.activeIndex;
-      if (idx < 0 || idx >= allItems.length) return;
-      const d = allItems[idx];
-      $("modalTitle").textContent = d.rel_path || "";
-      $("modalImg").src = d.image_href || "";
-      $("modalImg").style.filter = "none";
-      $("modalMeta").innerHTML = `
-        <div class="kv"><strong>Label:</strong> ${{(d.label || "").toUpperCase()}}</div>
-        <div class="kv"><strong>NSFW score:</strong> ${{fmtScore(d.nsfw_score)}}</div>
-        <div class="kv"><strong>SFW score:</strong> ${{fmtScore(d.normal_score)}}</div>
-        <div class="kv"><strong>Path:</strong> ${{d.rel_path || ""}}</div>
-        <div class="kv"><strong>Source:</strong> <a href="${{d.image_href || "#"}}"
-          target="_blank" rel="noreferrer">open</a></div>
-      `;
-      $("modalIdx").textContent = `${{idx+1}} / ${{allItems.length}}`;
-      $("mPrev").disabled = idx <= 0;
-      $("mNext").disabled = idx >= allItems.length - 1;
-    }}
-
-    function stepModal(delta) {{
-      const items = getFilteredSorted();
-      const idx = state.activeIndex;
-      if (idx < 0) return;
-      const next = Math.min(Math.max(0, idx + delta), items.length - 1);
-      state.activeIndex = next;
-      updateModal(items);
-    }}
-
-    // Wire controls
-    $("q").addEventListener("input", (e) => {{ state.q = e.target.value; state.page = 1; render(); }});
-    $("sort").addEventListener("change", (e) => {{ state.sort = e.target.value; state.page = 1; render(); }});
-    $("pageSize").addEventListener("change", (e) => {{ state.pageSize = Number(e.target.value) || 120; state.page = 1; render(); }});
-    $("minScore").addEventListener("input", (e) => {{
-      state.minScore = Number(e.target.value) || 0;
-      $("minScoreVal").textContent = state.minScore.toFixed(2);
-      state.page = 1;
-      render();
-    }});
-    $("showSfw").addEventListener("change", (e) => {{ state.showSfw = !!e.target.checked; state.page = 1; render(); }});
-    $("showNsfw").addEventListener("change", (e) => {{ state.showNsfw = !!e.target.checked; state.page = 1; render(); }});
-    $("blurNsfw").addEventListener("change", (e) => {{ state.blurNsfw = !!e.target.checked; render(); }});
-    $("prev").addEventListener("click", () => {{ state.page -= 1; render(); }});
-    $("next").addEventListener("click", () => {{ state.page += 1; render(); }});
-
-    $("close").addEventListener("click", closeModal);
-    $("modal").addEventListener("click", (e) => {{
-      if (e.target && e.target.id === "modal") closeModal();
-    }});
-    $("mPrev").addEventListener("click", () => stepModal(-1));
-    $("mNext").addEventListener("click", () => stepModal(+1));
-
-    document.addEventListener("keydown", (e) => {{
-      if (!$("modal").classList.contains("open")) return;
-      if (e.key === "Escape") closeModal();
-      else if (e.key === "ArrowLeft") stepModal(-1);
-      else if (e.key === "ArrowRight") stepModal(+1);
-    }});
-
+    
     // Initial render
-    $("minScoreVal").textContent = state.minScore.toFixed(2);
-    render();
+    update(root);
+    
+    // Center the tree in viewport
+    const treeWidth = (root.height + 1) * 250;
+    const treeHeight = (root.leaves().length + 1) * 30;
+    const svgWidth = svg.node().clientWidth || window.innerWidth;
+    const svgHeight = svg.node().clientHeight || window.innerHeight;
+    const scale = Math.min(1, svgWidth / (treeWidth + 200), svgHeight / (treeHeight + 100));
+    const tx = (svgWidth - treeWidth * scale) / 2 + 60;
+    const ty = (svgHeight - treeHeight * scale) / 2 + 30;
+    const initialTransform = d3.zoomIdentity.translate(tx, ty).scale(scale);
+    svg.call(zoom.transform, initialTransform);
   </script>
 </body>
 </html>
