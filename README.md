@@ -1,6 +1,6 @@
 # NSFW Folder Scanner (Falconsai)
 
-Scans a folder of images using the Hugging Face model `Falconsai/nsfw_image_detection` and generates an interactive D3 tree view gallery showing NSFW/SFW classification results. Optionally organize files into folders.
+Scans a folder of images using the Hugging Face model `Falconsai/nsfw_image_detection` and generates an interactive D3 thumbnail gallery (search, filters, paging, preview modal). Optionally organize files into folders.
 
 ## Setup
 
@@ -20,7 +20,7 @@ pip install -r requirements.txt
 python .\scan_nsfw_folder.py "C:\path\to\images"
 ```
 
-This creates `C:\path\to\images\_nsfw_scan\gallery.html` with an interactive tree view.
+This creates `C:\path\to\images\_nsfw_scan\gallery.html` with an interactive gallery.
 
 ### Optional Flags
 

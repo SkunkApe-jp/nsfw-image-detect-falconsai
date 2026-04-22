@@ -81,8 +81,9 @@ def _classify_image(classifier, image_path: Path, threshold: float) -> Classific
     return Classification(label=predicted, nsfw_score=nsfw_score, normal_score=normal_score)
 
 
-def _safe_dest_path(dest_dir: Path, src: Path) -> Path:
-    dest_dir.mkdir(parents=True, exist_ok=True)
+def _safe_dest_path(dest_dir: Path, src: Path, *, create_dir: bool = True) -> Path:
+    if create_dir:
+        dest_dir.mkdir(parents=True, exist_ok=True)
     candidate = dest_dir / src.name
     if not candidate.exists():
         return candidate
@@ -104,105 +105,563 @@ def _copy_or_move(src: Path, dest: Path, action: str) -> None:
         raise ValueError(f"Unknown action: {action}")
 
 
-def _generate_tree_html(results: list[dict], out_path: Path, threshold: float) -> None:
-    """Generate D3 tree visualization HTML."""
-    # Build tree structure: root -> [NSFW branch, SFW branch] -> files
-    nsfw_children = []
-    sfw_children = []
-
-    for r in results:
-        node = {"name": r["rel_path"], "score": r.get("nsfw_score", 0)}
-        if r["label"] == "nsfw":
-            nsfw_children.append(node)
-        else:
-            sfw_children.append(node)
-
-    tree_data = {
-        "name": "Scan Results",
-        "children": [
-            {"name": f"NSFW ({len(nsfw_children)})", "type": "nsfw", "children": nsfw_children},
-            {"name": f"SFW ({len(sfw_children)})", "type": "sfw", "children": sfw_children},
-        ],
-    }
-
-    html_content = f'''<!DOCTYPE html>
-<html>
+def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float) -> None:
+    """Generate an interactive D3-powered thumbnail gallery (no inner scrollbars)."""
+    html_content = f"""<!doctype html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>NSFW Scan Results</title>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <style>
-        body {{ font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 20px; background: #1a1a1a; color: #fff; }}
-        #tree {{ width: 100%; height: 90vh; overflow: auto; }}
-        .node circle {{ fill: #fff; stroke-width: 2px; cursor: pointer; }}
-        .node.nsfw circle {{ stroke: #ff6b6b; fill: #ff6b6b; }}
-        .node.sfw circle {{ stroke: #51cf66; fill: #51cf66; }}
-        .node.root circle {{ stroke: #339af0; fill: #339af0; }}
-        .node text {{ font-size: 12px; fill: #fff; }}
-        .link {{ fill: none; stroke: #555; stroke-width: 1.5px; }}
-        .tooltip {{ position: absolute; padding: 8px; background: rgba(0,0,0,0.9); border-radius: 4px; pointer-events: none; font-size: 12px; max-width: 400px; word-break: break-all; }}
-        h1 {{ margin: 0 0 10px 0; font-size: 18px; }}
-        .stats {{ color: #aaa; margin-bottom: 10px; font-size: 14px; }}
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NSFW Scan Gallery</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    :root {{
+      --bg: #0b0f14;
+      --panel: #121826;
+      --card: #0f1522;
+      --border: rgba(255,255,255,0.10);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.65);
+      --nsfw: #ff6b6b;
+      --sfw: #51cf66;
+      --accent: #339af0;
+    }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      overflow-x: hidden;
+    }}
+    a {{ color: var(--accent); }}
+    .wrap {{ max-width: 1280px; margin: 0 auto; padding: 16px; }}
+    .top {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 12px;
+    }}
+    .title {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    h1 {{ margin: 0; font-size: 16px; font-weight: 650; letter-spacing: 0.2px; }}
+    .meta {{ color: var(--muted); font-size: 12px; }}
+    .controls {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }}
+    @media (min-width: 900px) {{
+      .controls {{ grid-template-columns: 2fr 2fr 1fr 1fr; align-items: end; }}
+    }}
+    label {{ display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }}
+    input[type="text"], select {{
+      width: 100%;
+      padding: 10px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      outline: none;
+    }}
+    input[type="range"] {{ width: 100%; }}
+    .toggles {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+    }}
+    .toggles .t {{
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 13px;
+      color: var(--text);
+      user-select: none;
+    }}
+    .grid {{
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 12px;
+    }}
+    .card {{
+      appearance: none;
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0;
+      background: var(--card);
+      color: var(--text);
+      text-align: left;
+      overflow: hidden;
+      cursor: pointer;
+    }}
+    .thumb {{
+      position: relative;
+      width: 100%;
+      height: 140px;
+      background: rgba(255,255,255,0.03);
+    }}
+    .thumb img {{
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }}
+    .badge {{
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(6px);
+    }}
+    .badge.nsfw {{ border-color: rgba(255,107,107,0.4); color: var(--nsfw); }}
+    .badge.sfw {{ border-color: rgba(81,207,102,0.4); color: var(--sfw); }}
+    .info {{ padding: 10px 10px 12px; }}
+    .name {{
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.25;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      word-break: break-word;
+      min-height: 30px;
+    }}
+    .score {{
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }}
+    .pager {{
+      margin-top: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .btn {{
+      appearance: none;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+    }}
+    .btn:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+    .note {{
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+
+    /* Modal */
+    .modal {{
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.80);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 9999;
+    }}
+    .modal.open {{ display: flex; }}
+    .modal-card {{
+      width: min(1200px, 96vw);
+      max-height: 92vh;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(15, 21, 34, 0.95);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }}
+    .modal-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 12px;
+      border-bottom: 1px solid var(--border);
+    }}
+    .modal-title {{
+      font-size: 13px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 80vw;
+    }}
+    .modal-body {{
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      overflow: hidden;
+    }}
+    @media (min-width: 900px) {{
+      .modal-body {{ grid-template-columns: 2fr 1fr; }}
+    }}
+    .modal-img {{
+      width: 100%;
+      height: min(70vh, 680px);
+      background: rgba(0,0,0,0.35);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }}
+    .modal-img img {{
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }}
+    .modal-meta {{
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255,255,255,0.03);
+      overflow: auto;
+    }}
+    .kv {{ font-size: 12px; color: var(--muted); margin: 6px 0; word-break: break-all; }}
+    .kv strong {{ color: var(--text); font-weight: 600; }}
+    .modal-foot {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }}
+  </style>
 </head>
 <body>
-    <h1>NSFW Scan Results</h1>
-    <div class="stats">Threshold: {threshold} | Total: {len(results)} images</div>
-    <div id="tree"></div>
-    <div class="tooltip" style="display:none;"></div>
-    <script>
-        const data = {json.dumps(tree_data, indent=2)};
-        const margin = {{top: 40, right: 120, bottom: 20, left: 120}};
-        const width = window.innerWidth - margin.left - margin.right;
-        const height = Math.max(600, {len(results) * 25}) - margin.top - margin.bottom;
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>NSFW Scan Gallery</h1>
+        <div class="meta">Threshold: {threshold} • Total: {len(results)} images</div>
+      </div>
 
-        const svg = d3.select("#tree").append("svg")
-            .attr("width", width + margin.left + margin.right)
-            .attr("height", height + margin.top + margin.bottom)
-            .append("g")
-            .attr("transform", `translate(${{margin.left}},${{margin.top}})`);
+      <div class="controls">
+        <div>
+          <label for="q">Search (filename / path)</label>
+          <input id="q" type="text" placeholder="e.g. beach, IMG_1234, folder/name" autocomplete="off">
+        </div>
 
-        const tree = d3.tree().size([height, width]);
-        const root = d3.hierarchy(data);
-        tree(root);
+        <div>
+          <label for="sort">Sort</label>
+          <select id="sort">
+            <option value="score_desc">NSFW score (high → low)</option>
+            <option value="score_asc">NSFW score (low → high)</option>
+            <option value="name_asc">Name (A → Z)</option>
+            <option value="name_desc">Name (Z → A)</option>
+          </select>
+        </div>
 
-        // Links
-        svg.selectAll(".link")
-            .data(root.links())
-            .enter().append("path")
-            .attr("class", "link")
-            .attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
+        <div>
+          <label for="minScore">Min NSFW score</label>
+          <input id="minScore" type="range" min="0" max="1" step="0.01" value="0">
+          <div class="meta"><span id="minScoreVal">0.00</span></div>
+        </div>
 
-        // Nodes
-        const node = svg.selectAll(".node")
-            .data(root.descendants())
-            .enter().append("g")
-            .attr("class", d => "node " + (d.data.type || (d.depth === 0 ? "root" : "")))
-            .attr("transform", d => `translate(${{d.y}},${{d.x}})`);
+        <div>
+          <label for="pageSize">Page size</label>
+          <select id="pageSize">
+            <option value="60">60</option>
+            <option value="120" selected>120</option>
+            <option value="240">240</option>
+            <option value="480">480</option>
+          </select>
+        </div>
+      </div>
 
-        node.append("circle")
-            .attr("r", d => d.depth === 0 ? 8 : (d.children ? 6 : 4));
+      <div class="toggles">
+        <label class="t"><input id="showSfw" type="checkbox" checked> Show SFW</label>
+        <label class="t"><input id="showNsfw" type="checkbox" checked> Show NSFW</label>
+        <label class="t"><input id="blurNsfw" type="checkbox" checked> Blur NSFW thumbnails</label>
+        <span class="meta" id="counts"></span>
+      </div>
+    </div>
 
-        node.append("text")
-            .attr("dy", ".35em")
-            .attr("x", d => d.children ? -12 : 12)
-            .style("text-anchor", d => d.children ? "end" : "start")
-            .text(d => d.data.name);
+    <div class="grid" id="grid"></div>
+    <div class="pager">
+      <div><span id="pageInfo"></span></div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn" id="prev">Prev</button>
+        <button class="btn" id="next">Next</button>
+      </div>
+    </div>
+    <div class="note">
+      Tip: click a card to preview. Keyboard: <strong>Esc</strong> close, <strong>←/→</strong> previous/next.
+      If images don't load, your browser may block local file access; try a different browser or serve the folder via a local web server.
+    </div>
+  </div>
 
-        // Tooltip
-        const tooltip = d3.select(".tooltip");
-        node.on("mouseover", function(event, d) {{
-            if (!d.children) {{
-                tooltip.style("display", "block")
-                    .html(`<strong>${{d.data.name}}</strong>${{d.data.score ? `<br>NSFW Score: ${{d.data.score.toFixed(4)}}` : ""}}`)
-                    .style("left", (event.pageX + 10) + "px")
-                    .style("top", (event.pageY - 10) + "px");
-            }}
-        }}).on("mouseout", () => tooltip.style("display", "none"));
-    </script>
+  <div class="modal" id="modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title" id="modalTitle"></div>
+        <button class="btn" id="close">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-img"><img id="modalImg" alt=""></div>
+        <div class="modal-meta" id="modalMeta"></div>
+      </div>
+      <div class="modal-foot">
+        <div class="meta" id="modalIdx"></div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn" id="mPrev">Prev</button>
+          <button class="btn" id="mNext">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const DATA = {json.dumps(results, ensure_ascii=False)};
+    const state = {{
+      q: "",
+      sort: "score_desc",
+      minScore: 0.0,
+      showSfw: true,
+      showNsfw: true,
+      blurNsfw: true,
+      page: 1,
+      pageSize: 120,
+      activeIndex: -1,
+    }};
+
+    const $ = (id) => document.getElementById(id);
+    const grid = d3.select("#grid");
+
+    function asNumber(v) {{
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }}
+
+    function normalize(s) {{
+      return (s || "").toString().toLowerCase();
+    }}
+
+    function getFilteredSorted() {{
+      const q = normalize(state.q).trim();
+      const minScore = state.minScore;
+      let items = DATA.filter(d => {{
+        const label = (d.label || "").toLowerCase();
+        if (!state.showSfw && label !== "nsfw") return false;
+        if (!state.showNsfw && label === "nsfw") return false;
+
+        const score = asNumber(d.nsfw_score);
+        if (score < minScore) return false;
+
+        if (!q) return true;
+        const hay = normalize(d.rel_path || d.name || "");
+        return hay.includes(q);
+      }});
+
+      const cmpName = (a, b) => normalize(a.rel_path).localeCompare(normalize(b.rel_path));
+      const cmpScore = (a, b) => asNumber(a.nsfw_score) - asNumber(b.nsfw_score);
+
+      if (state.sort === "name_asc") items.sort(cmpName);
+      else if (state.sort === "name_desc") items.sort((a,b) => -cmpName(a,b));
+      else if (state.sort === "score_asc") items.sort(cmpScore);
+      else items.sort((a,b) => -cmpScore(a,b));
+
+      return items;
+    }}
+
+    function paginate(items) {{
+      const total = items.length;
+      const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+      state.page = Math.min(Math.max(1, state.page), totalPages);
+      const start = (state.page - 1) * state.pageSize;
+      const end = Math.min(total, start + state.pageSize);
+      return {{ total, totalPages, start, end, pageItems: items.slice(start, end) }};
+    }}
+
+    function labelBadge(label) {{
+      return (label || "").toLowerCase() === "nsfw" ? "nsfw" : "sfw";
+    }}
+
+    function fmtScore(v) {{
+      if (v === null || v === undefined || v === "") return "—";
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(4) : "—";
+    }}
+
+    function render() {{
+      const items = getFilteredSorted();
+      const {{ total, totalPages, start, end, pageItems }} = paginate(items);
+
+      const totalNsfw = items.filter(d => (d.label || "").toLowerCase() === "nsfw").length;
+      const totalSfw = items.length - totalNsfw;
+      $("counts").textContent = `Showing ${{items.length}} • SFW ${{totalSfw}} • NSFW ${{totalNsfw}}`;
+
+      $("pageInfo").textContent = `Page ${{state.page}} / ${{totalPages}} • Items ${{total ? (start+1) : 0}}-${{end}} of ${{total}}`;
+      $("prev").disabled = state.page <= 1;
+      $("next").disabled = state.page >= totalPages;
+
+      const cards = grid.selectAll("button.card").data(pageItems, d => d.rel_path);
+      cards.exit().remove();
+
+      const enter = cards.enter().append("button").attr("class", "card");
+      enter.append("div").attr("class", "thumb");
+      enter.append("div").attr("class", "info");
+
+      const merged = enter.merge(cards);
+
+      merged.attr("title", d => d.rel_path || "");
+      merged.on("click", (event, d) => openModal(items, d));
+
+      merged.select(".thumb").each(function(d) {{
+        const el = d3.select(this);
+        const badge = labelBadge(d.label);
+        let img = el.select("img");
+        if (img.empty()) {{
+          img = el.append("img")
+            .attr("loading", "lazy")
+            .attr("alt", "");
+        }}
+        img.attr("src", d.image_href || "");
+        img.style("filter", (state.blurNsfw && badge === "nsfw") ? "blur(18px)" : "none");
+        img.on("error", () => img.style("opacity", "0.25"));
+
+        let b = el.select(".badge");
+        if (b.empty()) b = el.append("div").attr("class", "badge");
+        b.attr("class", `badge ${{badge}}`).text(badge.toUpperCase());
+      }});
+
+      merged.select(".info").each(function(d) {{
+        const el = d3.select(this);
+        let name = el.select(".name");
+        if (name.empty()) name = el.append("div").attr("class", "name");
+        name.text(d.rel_path || "");
+
+        let score = el.select(".score");
+        if (score.empty()) {{
+          score = el.append("div").attr("class", "score");
+          score.append("div").attr("class", "s");
+          score.append("div").attr("class", "n");
+        }}
+        score.select(".s").text(`NSFW: ${{fmtScore(d.nsfw_score)}}`);
+        score.select(".n").text(`SFW: ${{fmtScore(d.normal_score)}}`);
+      }});
+    }}
+
+    function openModal(allItems, item) {{
+      const idx = allItems.findIndex(d => d.rel_path === item.rel_path);
+      state.activeIndex = idx;
+      updateModal(allItems);
+      const modal = $("modal");
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }}
+
+    function closeModal() {{
+      const modal = $("modal");
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      state.activeIndex = -1;
+    }}
+
+    function updateModal(allItems) {{
+      const idx = state.activeIndex;
+      if (idx < 0 || idx >= allItems.length) return;
+      const d = allItems[idx];
+      $("modalTitle").textContent = d.rel_path || "";
+      $("modalImg").src = d.image_href || "";
+      $("modalImg").style.filter = "none";
+      $("modalMeta").innerHTML = `
+        <div class="kv"><strong>Label:</strong> ${{(d.label || "").toUpperCase()}}</div>
+        <div class="kv"><strong>NSFW score:</strong> ${{fmtScore(d.nsfw_score)}}</div>
+        <div class="kv"><strong>SFW score:</strong> ${{fmtScore(d.normal_score)}}</div>
+        <div class="kv"><strong>Path:</strong> ${{d.rel_path || ""}}</div>
+        <div class="kv"><strong>Source:</strong> <a href="${{d.image_href || "#"}}"
+          target="_blank" rel="noreferrer">open</a></div>
+      `;
+      $("modalIdx").textContent = `${{idx+1}} / ${{allItems.length}}`;
+      $("mPrev").disabled = idx <= 0;
+      $("mNext").disabled = idx >= allItems.length - 1;
+    }}
+
+    function stepModal(delta) {{
+      const items = getFilteredSorted();
+      const idx = state.activeIndex;
+      if (idx < 0) return;
+      const next = Math.min(Math.max(0, idx + delta), items.length - 1);
+      state.activeIndex = next;
+      updateModal(items);
+    }}
+
+    // Wire controls
+    $("q").addEventListener("input", (e) => {{ state.q = e.target.value; state.page = 1; render(); }});
+    $("sort").addEventListener("change", (e) => {{ state.sort = e.target.value; state.page = 1; render(); }});
+    $("pageSize").addEventListener("change", (e) => {{ state.pageSize = Number(e.target.value) || 120; state.page = 1; render(); }});
+    $("minScore").addEventListener("input", (e) => {{
+      state.minScore = Number(e.target.value) || 0;
+      $("minScoreVal").textContent = state.minScore.toFixed(2);
+      state.page = 1;
+      render();
+    }});
+    $("showSfw").addEventListener("change", (e) => {{ state.showSfw = !!e.target.checked; state.page = 1; render(); }});
+    $("showNsfw").addEventListener("change", (e) => {{ state.showNsfw = !!e.target.checked; state.page = 1; render(); }});
+    $("blurNsfw").addEventListener("change", (e) => {{ state.blurNsfw = !!e.target.checked; render(); }});
+    $("prev").addEventListener("click", () => {{ state.page -= 1; render(); }});
+    $("next").addEventListener("click", () => {{ state.page += 1; render(); }});
+
+    $("close").addEventListener("click", closeModal);
+    $("modal").addEventListener("click", (e) => {{
+      if (e.target && e.target.id === "modal") closeModal();
+    }});
+    $("mPrev").addEventListener("click", () => stepModal(-1));
+    $("mNext").addEventListener("click", () => stepModal(+1));
+
+    document.addEventListener("keydown", (e) => {{
+      if (!$("modal").classList.contains("open")) return;
+      if (e.key === "Escape") closeModal();
+      else if (e.key === "ArrowLeft") stepModal(-1);
+      else if (e.key === "ArrowRight") stepModal(+1);
+    }});
+
+    // Initial render
+    $("minScoreVal").textContent = state.minScore.toFixed(2);
+    render();
+  </script>
 </body>
-</html>'''
-
+</html>
+"""
     out_path.write_text(html_content, encoding="utf-8")
 
 
@@ -273,8 +732,8 @@ def main(argv: list[str]) -> int:
     nsfw_dir = out_dir / "nsfw"
     sfw_dir = out_dir / "sfw"
 
-    # Only create output dirs if organizing
-    if args.organize:
+    # Only create output folder when organizing or writing CSV
+    if args.organize or args.write_csv:
         out_dir.mkdir(parents=True, exist_ok=True)
 
     images = list(_iter_images(root, recursive=args.recursive, out_dir=out_dir))
@@ -293,25 +752,19 @@ def main(argv: list[str]) -> int:
     errors = 0
 
     csv_rows = []
-    tree_results = []
+    gallery_results = []
 
     for idx, image_path in enumerate(images, start=1):
         rel = image_path.relative_to(root)
         try:
             result = _classify_image(classifier, image_path=image_path, threshold=args.threshold)
-            bucket_dir = nsfw_dir if result.label == "nsfw" else sfw_dir
-            dest = _safe_dest_path(bucket_dir, image_path)
+            dest: Optional[Path] = None
+            image_href: str = image_path.resolve().as_uri()
 
-            # Store result for tree view
-            tree_results.append({
-                "rel_path": str(rel),
-                "label": result.label,
-                "nsfw_score": result.nsfw_score,
-                "normal_score": result.normal_score,
-            })
-
-            # Only organize files if requested
             if args.organize:
+                bucket_dir = nsfw_dir if result.label == "nsfw" else sfw_dir
+                dest = _safe_dest_path(bucket_dir, image_path, create_dir=not args.dry_run)
+
                 if args.dry_run:
                     try:
                         dest_display = dest.relative_to(root)
@@ -320,7 +773,23 @@ def main(argv: list[str]) -> int:
                     print(f"[{idx}/{len(images)}] {rel} -> {dest_display} ({result.label})")
                 else:
                     _copy_or_move(image_path, dest, action=args.action)
+                    try:
+                        image_href = dest.resolve().relative_to(out_dir.resolve()).as_posix()
+                    except Exception:
+                        image_href = dest.resolve().as_uri()
 
+            # Store result for gallery view
+            gallery_results.append(
+                {
+                    "rel_path": rel.as_posix(),
+                    "label": result.label,
+                    "nsfw_score": result.nsfw_score,
+                    "normal_score": result.normal_score,
+                    "image_href": image_href,
+                }
+            )
+
+            # Only organize files if requested
             if result.label == "nsfw":
                 nsfw_count += 1
             else:
@@ -330,7 +799,7 @@ def main(argv: list[str]) -> int:
                 csv_rows.append(
                     {
                         "source": str(image_path),
-                        "destination": str(dest),
+                        "destination": "" if dest is None else str(dest),
                         "label": result.label,
                         "nsfw_score": "" if result.nsfw_score is None else f"{result.nsfw_score:.6f}",
                         "normal_score": "" if result.normal_score is None else f"{result.normal_score:.6f}",
@@ -343,10 +812,10 @@ def main(argv: list[str]) -> int:
             errors += 1
             print(f"[{idx}/{len(images)}] ERROR {rel}: {e}", file=sys.stderr)
 
-    # Generate tree view HTML (default behavior)
-    if not args.no_gallery and tree_results:
-        gallery_path = out_dir / "gallery.html"
-        _generate_tree_html(tree_results, gallery_path, args.threshold)
+    # Generate gallery HTML in root folder (default behavior)
+    if not args.no_gallery and gallery_results:
+        gallery_path = root / "gallery.html"
+        _generate_gallery_html(gallery_results, gallery_path, args.threshold)
         print(f"Gallery: {gallery_path}")
 
     if args.write_csv and csv_rows and not args.dry_run:
