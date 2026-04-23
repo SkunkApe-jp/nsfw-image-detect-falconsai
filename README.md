@@ -31,3 +31,8 @@ This creates `C:\path\to\images\_nsfw_scan\gallery.html` with an interactive gal
 - `--write-csv` — Also write `_nsfw_scan\report.csv`
 - `--no-gallery` — Skip generating the HTML gallery
 
+### Screenshot
+
+![Gallery Screenshot](screenshot/screenshot.png) 
+
+("**Copyright Notice**: The screenshot contains images of adult performers. All rights to the depicted individuals belong to their respective owners. This screenshot is used for demonstration purposes only to show the software's functionality and is not intended to infringe on any copyrights. If you are the copyright owner and wish this image to be removed, please contact the repository maintainer.") 
