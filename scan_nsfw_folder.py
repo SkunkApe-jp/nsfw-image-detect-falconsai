@@ -143,7 +143,7 @@ def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float
   <style>
     body {{
       margin: 0;
-      background: #0b0f14;
+      background: #0a0a0a;
       color: rgba(255,255,255,0.92);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       overflow: hidden;
@@ -235,19 +235,9 @@ def _generate_gallery_html(results: list[dict], out_path: Path, threshold: float
       font-size: 12px;
     }}
     .controls button:hover {{ background: rgba(255,255,255,0.15); }}
-    .stats {{
-      color: rgba(255,255,255,0.6);
-      margin-bottom: 8px;
-    }}
   </style>
 </head>
 <body>
-  <div class="controls">
-    <button onclick="expandAll()">Expand All</button>
-    <button onclick="collapseAll()">Collapse All</button>
-    <button onclick="toggleNsfw()">Toggle NSFW</button>
-    <button onclick="toggleSfw()">Toggle SFW</button>
-  </div>
   <div id="tree"></div>
   <div class="tooltip" id="tooltip"></div>
 
