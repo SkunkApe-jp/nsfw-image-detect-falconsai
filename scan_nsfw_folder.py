@@ -43,11 +43,19 @@ def _iter_images(root: Path, recursive: bool, out_dir: Optional[Path]) -> Iterab
 
 
 def _load_classifier(model_id: str, device: int):
-    from transformers import pipeline
+    from transformers import pipeline, AutoImageProcessor
+
+    # Loading the processor separately with use_fast=False to avoid the "breaking change" warning
+    # that occurs when using the pipeline default.
+    try:
+        processor = AutoImageProcessor.from_pretrained(model_id, use_fast=False)
+    except Exception:
+        processor = None
 
     return pipeline(
         "image-classification",
         model=model_id,
+        image_processor=processor,
         device=device,
     )
 
@@ -56,6 +64,10 @@ def _classify_image(classifier, image_path: Path, threshold: float) -> Classific
     from PIL import Image
 
     with Image.open(image_path) as img:
+        # Skip tiny images (like tracking pixels) which cause ambiguous channel warnings or crashes
+        if img.width < 10 or img.height < 10:
+            return Classification(label="normal", nsfw_score=0.0, normal_score=1.0)
+
         img = img.convert("RGB")
         results = classifier(img, top_k=2)
 
